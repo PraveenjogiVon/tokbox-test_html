@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Race Condition Test — Ticket #3109158</title>
+    <script src="https://static.opentok.com/v2/js/opentok.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+        h1 { color: #333; }
+        .badge { background: #0066cc; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; margin-left: 8px; }
+        .info-box { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 16px 0; font-size: 14px; }
+        .info-box p { margin: 4px 0; }
+        #publisher { width: 320px; height: 240px; background: #111; border-radius: 8px; margin: 16px 0; }
+        .status { padding: 8px 16px; border-radius: 20px; display: inline-block; font-size: 14px; font-weight: bold; margin: 8px 0; }
+        .status.connected { background: #d4edda; color: #155724; }
+        .status.disconnected { background: #f8d7da; color: #721c24; }
+        .status.waiting { background: #fff3cd; color: #856404; }
+        .btn { padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-size: 15px; font-weight: bold; width: 100%; margin: 8px 0; }
+        .btn-connect { background: #555; color: white; }
+        .btn-bug { background: #dc3545; color: white; }
+        .btn-fix { background: #28a745; color: white; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+        .test-card { background: white; border-radius: 8px; padding: 16px; border: 2px solid #ddd; }
+        .test-card.bug { border-color: #dc3545; }
+        .test-card.fix { border-color: #28a745; }
+        .test-card h3 { margin: 0 0 8px 0; font-size: 15px; }
+        .test-card p { font-size: 13px; color: #666; margin: 0 0 12px 0; }
+        pre { background: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 4px; font-size: 11px; overflow-x: auto; }
+        #log { background: #1a1a1a; color: #00ff88; font-family: monospace; font-size: 12px; padding: 16px; border-radius: 8px; height: 200px; overflow-y: auto; margin-top: 16px; }
+        .log-error { color: #ff4444; }
+        .log-warn { color: #ffaa00; }
+        .log-success { color: #00ff88; }
+        .log-info { color: #88ccff; }
+        .result-badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; margin-top: 8px; }
+        .result-bug { background: #f8d7da; color: #721c24; }
+        .result-fix { background: #d4edda; color: #155724; }
+        .result-pending { background: #e2e3e5; color: #383d41; }
+    </style>
+</head>
+<body>
+    <h1>✏️ Race Condition Test <span class="badge">Ticket #3109158</span></h1>
+    <p>Tests concurrent <code>applyVideoFilter()</code> + <code>publishVideo(true)</code> on js-2.35.1 vs fix with await</p>
+
+    <div class="info-box">
+        <p>🔑 <strong>API Key:</strong> 48054921</p>
+        <p>📋 <strong>Session ID:</strong> 2_MX40ODA1NDkyMX5-MTc4NzkyMTM4OTMyN35EeUdiT1pURTVUMzdraHM2L2h6bkpMY2J-fn4</p>
+        <p>📦 <strong>SDK Version:</strong> <span id="sdkVersion">detecting...</span></p>
+    </div>
+
+    <div id="publisher"></div>
+    <div id="statusBadge" class="status waiting">⏳ Not connected</div>
+
+    <button class="btn btn-connect" id="btnConnect" onclick="connectAndPublish()">▶ Connect &amp; Publish (video OFF)</button>
+
+    <div class="test-grid">
+        <div class="test-card bug">
+            <h3>❌ Test 1 — Reproduce Bug</h3>
+            <p>Calls applyVideoFilter() and publishVideo(true) at the same time — no await. Replicates the customer's exact code pattern.</p>
+            <pre>// No await — concurrent calls
+pub.applyVideoFilter({
+  type: 'backgroundReplacement',
+  backgroundImgUrl: imageUrl
+});
+pub.publishVideo(true); // fires immediately</pre>
+            <div id="bugResult" class="result-badge result-pending">Not run yet</div>
+            <button class="btn btn-bug" id="btnBug" onclick="runBugTest()" disabled>▶ Run Bug Test</button>
+        </div>
+        <div class="test-card fix">
+            <h3>✅ Test 2 — Test the Fix</h3>
+            <p>Awaits applyVideoFilter() before calling publishVideo(true). Sequential execution — the proposed fix.</p>
+            <pre>// With await — sequential
+await pub.applyVideoFilter({
+  type: 'backgroundReplacement',
+  backgroundImgUrl: imageUrl
+});
+await pub.publishVideo(true); // waits</pre>
+            <div id="fixResult" class="result-badge result-pending">Not run yet</div>
+            <button class="btn btn-fix" id="btnFix" onclick="runFixTest()" disabled>▶ Run Fix Test</button>
+        </div>
+    </div>
+
+    <div id="log"></div>
+
+    <script>
+        // Credentials
+        const API_KEY = '48054921';
+        const SESSION_ID = '2_MX40ODA1NDkyMX5-MTc4NzkyMTM4OTMyN35EeUdiT1pURTVUMzdraHM2L2h6bkpMY2J-fn4';
+        const TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI0ODA1NDkyMSIsImlzdCI6InByb2plY3QiLCJpYXQiOjE3ODc5MjEzOTUsImV4cCI6MTc4NzkyNDk5NSwic2Vzc2lvbl9pZCI6IjJfTVg0ME9EQTFORGt5TVg1LU1UYzROemt5TVRNNE9UTXlOMzVFZVVkaVQxcFVSVFZVTXpkcmFITTJMMmg2YmtwTVkySi1mbjQiLCJjcmVhdGVfdGltZSI6MTc4NzkyMTM5Niwibm9uY2UiOjAuNjQwODkyMzgxMTgxNjA4OSwicm9sZSI6InB1Ymxpc2hlciIsImV4cGlyZV90aW1lIjoxNzg3OTI0OTk1LCJpbml0aWFsX2xheW91dF9jbGFzc19saXN0IjoiIiwic2NvcGUiOiJzZXNzaW9uLmNvbm5lY3QifQ.Ky_u8XkMReOPWW7yjfO9_l0ufayDP6AJKw0DfZHuP4Q';
+
+        // Use a base64 encoded small solid color image to avoid CORS issues
+        const IMAGE_URL = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAyADIDASIAAhEBAxEB/8QAGwABAAMBAQEBAAAAAAAAAAAAAAQFBgMC/8QAMBAAAgIBAwMCBAUFAAAAAAAAAQIDBBEFEiExBhNBUWEiMnGBkaHhFBUjQlL/xAAYAQADAQEAAAAAAAAAAAAAAAAAAQIDBP/EABwRAQACAwEBAQAAAAAAAAAAAAABEQISITFB/9oADAMBAAIRAxEAPwD7+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKAAAAJAAAAAAAAArFiQhGUpNKMVbb7JFipVt3LNdSi3OclFJd2Yb+oUpXbVp2pKjSnBydPn4b7PH4ZqUWnhppp9mB5AAAAAAAAAAAAAAAACgAAAAJAAAAAAAASbJYeFkXpypVbJd5RjJr5tFQCrSSSSSSXZIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB//Z';
+
+        let session = null;
+        let publisher = null;
+        let mediaProcessorError = false;
+        let warnError = false;
+
+        function log(msg, type = 'info') {
+            const div = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            const cls = type === 'error' ? 'log-error' : type === 'warn' ? 'log-warn' : type === 'success' ? 'log-success' : 'log-info';
+            div.innerHTML += `<div class="${cls}">${time}  ${msg}</div>`;
+            div.scrollTop = div.scrollHeight;
+        }
+
+        // Detect SDK version
+        window.addEventListener('load', () => {
+            try {
+                const v = OT.VERSION || 'unknown';
+                document.getElementById('sdkVersion').textContent = v;
+            } catch(e) {
+                document.getElementById('sdkVersion').textContent = 'unknown';
+            }
+
+            // Intercept console errors to catch MediaProcessor errors
+            const origError = console.error.bind(console);
+            console.error = function(...args) {
+                const msg = args.join(' ');
+                if (msg.includes('MediaProcessor') || msg.includes('MediaStreamTrackProcessor')) {
+                    mediaProcessorError = true;
+                    log('🚨 ' + msg, 'error');
+                }
+                origError(...args);
+            };
+
+            const origWarn = console.warn.bind(console);
+            console.warn = function(...args) {
+                const msg = args.join(' ');
+                if (msg.includes('MediaProcessor') || msg.includes('MediaStreamTrackProcessor')) {
+                    warnError = true;
+                    log('⚠️ ' + msg, 'warn');
+                }
+                origWarn(...args);
+            };
+        });
+
+        function setStatus(msg, type) {
+            const el = document.getElementById('statusBadge');
+            el.textContent = msg;
+            el.className = 'status ' + type;
+        }
+
+        async function connectAndPublish() {
+            document.getElementById('btnConnect').disabled = true;
+            log('Initializing session...', 'info');
+
+            session = OT.initSession(API_KEY, SESSION_ID);
+
+            session.on('sessionConnected', () => {
+                log('✅ Session connected!', 'success');
+
+                publisher = OT.initPublisher('publisher', {
+                    publishVideo: false,
+                    publishAudio: false,
+                    mirror: false,
+                    showControls: false,
+                    width: '320px',
+                    height: '240px'
+                }, (err) => {
+                    if (err) {
+                        log('❌ Publisher init error: ' + err.message, 'error');
+                        return;
+                    }
+                    log('✅ Publisher initialized with publishVideo: false', 'success');
+                });
+
+                session.publish(publisher, (err) => {
+                    if (err) {
+                        log('❌ Publish error: ' + err.message, 'error');
+                        return;
+                    }
+                    log('✅ Publisher connected to session — video is OFF', 'success');
+                    log('👆 Now click "Run Bug Test" to reproduce the error', 'info');
+                    setStatus('✅ Connected — ready to test', 'connected');
+                    document.getElementById('btnBug').disabled = false;
+                    document.getElementById('btnFix').disabled = false;
+                });
+            });
+
+            session.on('sessionDisconnected', () => {
+                setStatus('❌ Disconnected', 'disconnected');
+            });
+
+            session.connect(TOKEN, (err) => {
+                if (err) {
+                    log('❌ Connection failed: ' + err.message + ' (token may be expired)', 'error');
+                    setStatus('❌ Connection failed — token may be expired', 'disconnected');
+                    document.getElementById('btnConnect').disabled = false;
+                }
+            });
+        }
+
+        async function runBugTest() {
+            document.getElementById('btnBug').disabled = true;
+            document.getElementById('btnFix').disabled = true;
+            mediaProcessorError = false;
+            warnError = false;
+
+            log('---- BUG TEST START (no await) ----', 'warn');
+            log('Calling applyVideoFilter() and publishVideo(true) at the same time...', 'info');
+
+            // Reset first
+            await publisher.publishVideo(false);
+            try { await publisher.clearVideoFilter(); } catch(e) {}
+            await new Promise(r => setTimeout(r, 500));
+
+            // THE BUG — concurrent calls, no await
+            publisher.applyVideoFilter({
+                type: 'backgroundReplacement',
+                backgroundImgUrl: IMAGE_URL
+            }).then(() => {
+                log('applyVideoFilter() resolved ✅', 'success');
+            }).catch(err => {
+                log('applyVideoFilter() rejected ❌: ' + err.message, 'error');
+            });
+
+            publisher.publishVideo(true);
+            log('publishVideo(true) called immediately (no await)', 'info');
+
+            // Wait 3 seconds to observe
+            await new Promise(r => setTimeout(r, 3000));
+            log('hasVideo after 3s: ' + (publisher.stream ? publisher.stream.hasVideo : 'no stream'), 'info');
+            log('---- BUG TEST END ----', 'warn');
+
+            // Show result
+            const resultEl = document.getElementById('bugResult');
+            if (mediaProcessorError || warnError) {
+                resultEl.textContent = '🚨 Error reproduced! MediaProcessor error detected';
+                resultEl.className = 'result-badge result-bug';
+            } else {
+                resultEl.textContent = '⚠️ No MediaProcessor error — see console for other errors';
+                resultEl.className = 'result-badge result-pending';
+            }
+
+            // Reset for fix test
+            await publisher.publishVideo(false);
+            try { await publisher.clearVideoFilter(); } catch(e) {}
+            await new Promise(r => setTimeout(r, 500));
+
+            document.getElementById('btnBug').disabled = false;
+            document.getElementById('btnFix').disabled = false;
+        }
+
+        async function runFixTest() {
+            document.getElementById('btnBug').disabled = true;
+            document.getElementById('btnFix').disabled = true;
+            mediaProcessorError = false;
+            warnError = false;
+
+            log('---- FIX TEST START (with await) ----', 'success');
+            log('First awaiting applyVideoFilter(), then calling publishVideo(true)...', 'info');
+
+            // Reset first
+            await publisher.publishVideo(false);
+            try { await publisher.clearVideoFilter(); } catch(e) {}
+            await new Promise(r => setTimeout(r, 500));
+
+            try {
+                // THE FIX — sequential, awaited
+                await publisher.applyVideoFilter({
+                    type: 'backgroundReplacement',
+                    backgroundImgUrl: IMAGE_URL
+                });
+                log('applyVideoFilter() completed successfully ✅', 'success');
+
+                await publisher.publishVideo(true);
+                log('publishVideo(true) completed successfully ✅', 'success');
+
+            } catch(err) {
+                log('❌ Error during fix test: ' + err.message, 'error');
+            }
+
+            await new Promise(r => setTimeout(r, 2000));
+            log('hasVideo after 2s: ' + (publisher.stream ? publisher.stream.hasVideo : 'no stream'), 'info');
+            log('---- FIX TEST END ----', 'success');
+
+            // Show result
+            const resultEl = document.getElementById('fixResult');
+            if (!mediaProcessorError && !warnError) {
+                resultEl.textContent = '✅ Fix works — no MediaProcessor errors!';
+                resultEl.className = 'result-badge result-fix';
+            } else {
+                resultEl.textContent = '❌ Still seeing errors even with fix';
+                resultEl.className = 'result-badge result-bug';
+            }
+
+            document.getElementById('btnBug').disabled = false;
+            document.getElementById('btnFix').disabled = false;
+        }
+    </script>
+</body>
+</html>
